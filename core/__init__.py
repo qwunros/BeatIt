@@ -3,7 +3,7 @@
 
 from .recorder import InputRecorder
 from .bpm_detector import detect_bpm, manual_adjust
-from .quantizer import quantize_interval, notation_for_duration, format_notation
+from .quantizer import quantize_interval, quantize_events, notation_for_duration, format_notation
 from .exporter import export_midi, export_image, export_text
 
 __all__ = [

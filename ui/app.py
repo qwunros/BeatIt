@@ -14,7 +14,7 @@ import threading
 
 from core.recorder import InputRecorder
 from core.bpm_detector import detect_bpm_sliding, manual_adjust
-from core.quantizer import quantize_interval, format_notation, format_notation_simple
+from core.quantizer import quantize_interval, quantize_events, format_notation, format_notation_simple
 from core.exporter import export_midi, export_image, export_text, PERCUSSION_MAP
 from ui.widgets import NotationCanvas
 
@@ -399,19 +399,21 @@ class BeatITApp(tk.Tk):
         self.after(self._poll_interval, self._poll_events)
 
     def _quantize_and_display(self):
-        """量化所有间隔并更新简谱显示"""
-        if len(self._raw_intervals) < 2:
+        """量化所有事件并更新简谱显示（基于累积位置量化）"""
+        events = self.recorder.events
+        if len(events) < 2:
             return
 
         effective_bpm = self._current_bpm * self._bpm_multiplier
+        timestamps = [e[0] for e in events]
 
-        # 量化每个间隔
-        self._quantized_notes = []
-        for ioi in self._raw_intervals:
-            _, closest_ratio, symbol = quantize_interval(
-                ioi, effective_bpm, self._snap_strength
-            )
-            self._quantized_notes.append((closest_ratio, symbol))
+        # 基于累积位置量化，保证总拍数正确
+        self._quantized_notes = quantize_events(
+            timestamps, effective_bpm, self._snap_strength
+        )
+
+        if not self._quantized_notes:
+            return
 
         # 格式化显示
         notation = format_notation(
@@ -432,7 +434,7 @@ class BeatITApp(tk.Tk):
 
     def _analyze_and_update(self):
         """停止后进行最终分析"""
-        if len(self._raw_intervals) < 2:
+        if not self._quantized_notes:
             return
 
         effective_bpm = self._current_bpm * self._bpm_multiplier
