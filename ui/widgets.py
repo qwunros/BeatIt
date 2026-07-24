@@ -69,9 +69,8 @@ class NotationCanvas(tk.Canvas):
 
         instr_text = (
             '简谱说明:\n'
-            '  X = 四分  |  X̲ = 八分  |  X̲̲ = 十六分\n'
-            '  X- = 二分  |  X--- = 全音符  |  X· = 附点\n'
-            '  0 = 休止符'
+            '  X = 四分  |  X- = 二分  |  X-- = 附点二分\n'
+            '  X--- = 全音符  |  X· = 附点  |  X̲ = 八分  |  X̲̲ = 十六分'
         )
         self.create_text(
             self._x_margin, self._current_y,

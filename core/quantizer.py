@@ -4,13 +4,15 @@
 把连续时间间隔映射到标准音符时值，并渲染为简谱节奏字符串。
 
 简谱节奏记法 (打击乐用 X)：
-  - X--- — 全音符 (4 个四分音符)
-  - X-   — 二分音符 (2 个四分音符)
-  - X    — 四分音符
-  - X̲   — 八分音符 (1/2 个四分音符)
-  - X̲̲  — 十六分音符 (1/4 个四分音符)
-  - X·   — 附点 (延长 50%)
-  - 0    — 休止符
+  - X--- — 全音符   (4 拍)  X + 三个减号
+  - X--  — 附点二分 (3 拍)  X + 两个减号
+  - X-   — 二分音符 (2 拍)  X + 一个减号
+  - X    — 四分音符 (1 拍)
+  - X·   — 附点四分 (1.5 拍)
+  - X̲   — 八分音符 (0.5 拍)
+  - X̲·  — 附点八分 (0.75 拍)
+  - X̲̲  — 十六分音符 (0.25 拍)
+  - 0    — 休止符（不在简谱中出现）
 """
 import numpy as np
 
@@ -25,7 +27,7 @@ STANDARD_RATIOS = [
     (1.0,  '四分',   'X'),                              # X
     (1.5,  '附点四分', 'X\u00B7'),                      # X·
     (2.0,  '二分',   'X-'),                              # X-
-    (3.0,  '附点二分', 'X-.'),                           # X-.
+    (3.0,  '附点二分', 'X--'),                           # X--
     (4.0,  '全音符', 'X---'),                            # X---
 ]
 
@@ -106,12 +108,13 @@ def quantize_events(timestamps, bpm, snap_strength=0.8):
             notes.append((ratio, sym))
         return notes
 
-    # --- 基于累积位置量化 ---
+    # --- 基于间隔独立量化（不累计误差） ---
     q_positions = [0.0]  # 第一个音符位置 = 0
     q_notes = []
 
     for i in range(1, len(raw_beats)):
-        raw_interval = raw_beats[i] - q_positions[-1]
+        # 用原始相邻时间戳计算真实间隔，避免上次量化误差累积到本次
+        raw_interval = raw_beats[i] - raw_beats[i - 1]
         if raw_interval <= 0:
             raw_interval = 0.25  # 极小间隔兜底
 
@@ -124,11 +127,11 @@ def quantize_events(timestamps, bpm, snap_strength=0.8):
         snapped = raw_interval + (closest_ratio - raw_interval) * snap_strength
         snapped = max(snapped, 0.125)  # 最小 1/32 音符
 
-        # 新的累积拍位置
+        # 新的累积拍位置（仅用于后续 measure 分组，不影响间隔计算）
         new_q_pos = q_positions[-1] + snapped
         q_positions.append(new_q_pos)
 
-        # 确定实际输出使用的标准比例（从 snapped 重映射到标准值）
+        # 确定实际输出使用的标准比例
         d2 = [abs(r - snapped) for r in QUANTIZE_RATIOS]
         out_idx = int(np.argmin(d2))
         out_ratio = QUANTIZE_RATIOS[out_idx]
@@ -179,42 +182,43 @@ def format_notation(quantized_notes, bpm, time_sig=(4, 4)):
         return '（无音符）'
 
     beats_per_measure, beat_unit = time_sig
-    tolerance = 0.05  # 浮点数容差
-    min_note = min(QUANTIZE_RATIOS)  # 最小音符时值（0.25拍）
+    tolerance = 0.05
+    min_note = min(QUANTIZE_RATIOS)  # 0.25拍
 
     # 构建完整简谱行
     measures = []
-    current_measure_notes = []  # (ratio, symbol)
+    current_measure_notes = []  # list[(ratio, symbol)]
     current_dur = 0.0
 
+    def _find_extended_symbol(orig_ratio, add_beats):
+        """将 orig_ratio 延长 add_beats 拍，返回最近的 (新比例, 新符号)"""
+        target = orig_ratio + add_beats
+        best = min(QUANTIZE_RATIOS, key=lambda r: abs(r - target))
+        _, _, sym = STANDARD_RATIOS[QUANTIZE_RATIOS.index(best)]
+        return best, sym
+
     def _close_measure():
-        """封小节：补足不够的拍数（插入休止符），然后加入 measures"""
+        """封小节：不足时延长最后一个音符来补满"""
         nonlocal current_dur, current_measure_notes
+        if not current_measure_notes:
+            current_dur = 0.0
+            return
+
         if current_dur < beats_per_measure - tolerance:
             shortfall = beats_per_measure - current_dur
-            # 找到最接近的休止符时值来补足
             if shortfall >= min_note - tolerance:
-                best_ratio = None
-                best_dist = float('inf')
-                for r in QUANTIZE_RATIOS:
-                    if r <= shortfall + tolerance:
-                        dist = abs(r - shortfall)
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_ratio = r
-                if best_ratio is not None and best_ratio >= min_note:
-                    rest_symbol = notation_for_duration(best_ratio, use_rest=True)
-                    current_measure_notes.append((best_ratio, rest_symbol))
-                    current_dur += best_ratio
+                # 延长最后一个音符来补满
+                last_ratio, last_sym = current_measure_notes[-1]
+                new_ratio, new_sym = _find_extended_symbol(last_ratio, shortfall)
+                current_measure_notes[-1] = (new_ratio, new_sym)
+                current_dur = beats_per_measure
 
-        if current_measure_notes:
-            symbols = [s for _, s in current_measure_notes]
-            measures.append(' '.join(symbols))
+        measures.append(' '.join(s for _, s in current_measure_notes))
         current_measure_notes = []
         current_dur = 0.0
 
     for ratio, symbol in quantized_notes:
-        # 如果当前小节已有音符，且加入此音符后会显著超出一小节 -> 先封小节
+        # 如果当前小节已有音符，且加入此音符后会超出一小节 -> 先封小节
         if (current_dur > tolerance
                 and current_dur + ratio > beats_per_measure + tolerance):
             _close_measure()
@@ -226,10 +230,9 @@ def format_notation(quantized_notes, bpm, time_sig=(4, 4)):
         if abs(current_dur - beats_per_measure) < tolerance:
             _close_measure()
 
-    # 处理最后一小节（不补休止符，保留原样）
+    # 最后一小节不延长
     if current_measure_notes:
-        symbols = [s for _, s in current_measure_notes]
-        measures.append(' '.join(symbols))
+        measures.append(' '.join(s for _, s in current_measure_notes))
 
     # 节拍标记
     header = f"拍号: {time_sig[0]}/{time_sig[1]}  |  BPM: {bpm:.0f}\n"
